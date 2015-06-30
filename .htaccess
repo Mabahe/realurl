@@ -1,4 +1,4 @@
 deny from all
-<FilesMatch "^ext_icon\.(gif|png)$">
+<FilesMatch "^(ext_icon|tx_realurl_redirects)\.(gif|png)$">
 allow from all
 </FilesMatch>

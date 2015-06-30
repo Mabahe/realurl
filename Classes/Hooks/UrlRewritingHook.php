@@ -1034,6 +1034,12 @@ class UrlRewritingHook implements SingletonInterface {
 	 * @see decodeSpURL_doDecode()
 	 */
 	protected function decodeSpURL_checkRedirects($speakingURIpath) {
+		if (!empty($this->extConf['useGetVarsInRedirects'])){
+			//uses params for redirects -> xyz.cfm?id=x works now
+			$speakingURIpath = $this->pObj->siteScript;
+		}
+
+		// redirect should be case insensitive
 		$speakingURIpath = strtolower(trim($speakingURIpath));
 
 		if (isset($this->extConf['redirects'][$speakingURIpath])) {
@@ -1065,33 +1071,113 @@ class UrlRewritingHook implements SingletonInterface {
 			}
 		}
 
-		// DB defined redirects
-		$hash = \TYPO3\CMS\Core\Utility\GeneralUtility::md5int($speakingURIpath);
-		/** @noinspection PhpUndefinedMethodInspection */
-		$url = $GLOBALS['TYPO3_DB']->fullQuoteStr($speakingURIpath, 'tx_realurl_redirects');
-		$domainId = $this->getCurrentDomainId();
-		/** @noinspection PhpUndefinedMethodInspection */
-		list($redirectRow) = $GLOBALS['TYPO3_DB']->exec_SELECTgetRows(
-			'destination,has_moved,domain_limit', 'tx_realurl_redirects',
-			'url_hash=' . $hash . ' AND url=' . $url . ' AND domain_limit IN (0,' . $domainId . ')',
-			'', 'domain_limit DESC');
-		if (is_array($redirectRow)) {
-			// Update statistics
-			$fields_values = array(
-				'counter' => 'counter+1',
-				'tstamp' => time(),
-				'last_referer' => \TYPO3\CMS\Core\Utility\GeneralUtility::getIndpEnv('HTTP_REFERER')
-			);
-			/** @noinspection PhpUndefinedMethodInspection */
-			$GLOBALS['TYPO3_DB']->exec_UPDATEquery('tx_realurl_redirects',
-				'url_hash=' . $hash . ' AND url=' . $url . ' AND domain_limit=' . $redirectRow['domain_limit'],
-				$fields_values, array('counter'));
+		// DB defined redirects:
+		/* Select the following redirects
+			- for the current URIpath and the current HTTP_HOST, if a domain relation isset
+			- with an regex and the current HTTP_HOST, if a domain relation isset
 
-			// Redirect
-			$redirectCode = ($redirectRow['has_moved'] ? 301 : 302);
-			header('HTTP/1.1 ' . $redirectCode . ' TYPO3 RealURL Redirect M' . __LINE__);
-			header('Location: ' . \TYPO3\CMS\Core\Utility\GeneralUtility::locationHeaderUrl($redirectRow['destination']));
-			exit();
+			Attention: if there are two redirects for the same URIpath the redirect for the current domain will be used although there is one with no domain relation
+		*/
+
+		$redirectRows = $GLOBALS['TYPO3_DB']->exec_SELECTgetRows(
+			'DISTINCT tx_realurl_redirects.*, sys_domain.uid as sys_domain_uid, sys_domain.domainName as sys_domain_domainName',
+			'tx_realurl_redirects LEFT JOIN tx_realurl_redirects_sys_domain_mm ON tx_realurl_redirects.uid = tx_realurl_redirects_sys_domain_mm.uid_local
+				LEFT JOIN sys_domain ON tx_realurl_redirects_sys_domain_mm.uid_foreign = sys_domain.uid
+				AND sys_domain.domainName = ' . $GLOBALS['TYPO3_DB']->fullQuoteStr(\TYPO3\CMS\Core\Utility\GeneralUtility::getIndpEnv('HTTP_HOST'), 'tx_realurl_redirects'),
+			'(tx_realurl_redirects.url = ' . $GLOBALS['TYPO3_DB']->fullQuoteStr($speakingURIpath, 'tx_realurl_redirects') . ' OR tx_realurl_redirects.url_regular_expression != \'\')
+			AND tx_realurl_redirects.deleted = 0
+			AND tx_realurl_redirects.hidden = 0 ',
+			'',
+			'sys_domain_domainName DESC, tx_realurl_redirects.url DESC, tx_realurl_redirects.url_regular_expression DESC'
+		);
+
+		if (is_array($redirectRows) && !empty($redirectRows)) {
+			foreach ($redirectRows as $redirectRow) {
+				// check if there is a domain relation set
+				if (
+					($redirectRow['sys_domain_uid'] !== NULL && $redirectRow['sys_domain_domainName'] !== NULL && (int)$redirectRow['domain'] > 0)
+					||
+					($redirectRow['sys_domain_uid'] === NULL && $redirectRow['sys_domain_domainName'] === NULL && (int)$redirectRow['domain'] == 0)
+				) {
+					// Check if the redirect has a url regex set
+					if (!empty($redirectRow['url_regular_expression'])) {
+						// Check if the regex matches the current speaking URI path
+						$urlMatch = preg_match('#'. $redirectRow['url_regular_expression'] .'#', $speakingURIpath);
+						if ($urlMatch == 0 || $urlMatch === FALSE) {
+							// regular expression doesn't match to the current path - step to next redirect record
+							continue;
+						}
+					}
+
+					// Generate the fields array to update the statistic of the redirect
+					$fields_values = array(
+						'counter' => $redirectRow['counter'] + 1,
+						'last_time' => time(),
+						'last_referer' => \TYPO3\CMS\Core\Utility\GeneralUtility::getIndpEnv('HTTP_REFERER')
+					);
+
+					// Update the redirect record
+					$GLOBALS['TYPO3_DB']->exec_UPDATEquery(
+						'tx_realurl_redirects',
+						'uid = '. $redirectRow['uid'] .' AND deleted = 0 AND hidden = 0',
+						$fields_values,
+						array('counter')
+					);
+
+					// check if the destination is defined as typolink URL
+					if (!empty($redirectRow['destination_typolink'])) {
+
+						// Set some needed vars to make typolink rendering possible at this early point, but this initialization doesn't matter because of the exit() after the header forward
+						$GLOBALS['TSFE']->config = array(
+							'mainScript' => 'index.php',
+							'config' => array(
+								'typolinkEnableLinksAcrossDomains' => 1,
+								'typolinkCheckRootline' => 1,
+								'tx_realurl_enable' => 1
+							)
+						);
+						$GLOBALS['TSFE']->clear_preview();
+						$GLOBALS['TSFE']->determineId();
+						$GLOBALS['TSFE']->initTemplate();
+
+						$GLOBALS['TSFE']->id = $GLOBALS['TSFE']->sys_page->getDomainStartPage(\TYPO3\CMS\Core\Utility\GeneralUtility::getIndpEnv('HTTP_HOST'));
+						$GLOBALS['TSFE']->tmpl->start($GLOBALS['TSFE']->rootLine);
+
+						// render the typolink destination path
+						/** @var \TYPO3\CMS\Frontend\ContentObject\ContentObjectRenderer $contentObjectRenderer */
+						$contentObjectRenderer = \TYPO3\CMS\Core\Utility\GeneralUtility::makeInstance('TYPO3\\CMS\\Frontend\\ContentObject\\ContentObjectRenderer');
+						$destinationUrl = $contentObjectRenderer->typoLink_URL(
+							array(
+								'parameter' => $redirectRow['destination_typolink']
+							)
+						);
+
+						// realurl the normal url if it is needed - not for filelinks
+						if (strstr($destinationUrl, '?')) {
+							$notused = false;
+							$params['LD']['totalURL'] = $GLOBALS['TSFE']->absRefPrefix . $this->prefixEnablingSpURL . $destinationUrl;
+							$params['TCEmainHook'] = 1;
+							$this->encodeSpURL($params, $notused);
+							$destinationUrl = $params['LD']['totalURL'];
+
+						}
+						unset($contentObjectRenderer);
+					} else {
+						$destinationUrl = $redirectRow['destination'];
+					}
+
+					// Check if $destinationURL includes the marker {currentURL}
+					if (strstr($destinationUrl, '{currentURL}') !== FALSE) {
+						$destinationUrl = str_replace('{currentURL}', $speakingURIpath, $destinationUrl);
+					}
+
+					// Redirect
+					$redirectCode = ($redirectRow['has_moved'] ? 301 : 302);
+					header('HTTP/1.1 ' . $redirectCode . ' TYPO3 RealURL Redirect');
+					header('Location: ' . \TYPO3\CMS\Core\Utility\GeneralUtility::locationHeaderUrl($destinationUrl));
+					exit();
+				}
+			}
 		}
 	}
 
