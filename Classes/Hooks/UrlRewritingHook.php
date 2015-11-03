@@ -2140,7 +2140,8 @@ class UrlRewritingHook implements SingletonInterface {
 
 		// Convert some special tokens to the space character
 		$space = $cfg['useUniqueCache_conf']['spaceCharacter'] ? substr($cfg['useUniqueCache_conf']['spaceCharacter'], 0, 1) : '_';
-		$processedTitle = strtr($processedTitle, ' -+_', $space . $space . $space . $space); // convert spaces
+		$charactersReplacedBySpaceCharacter = $cfg['useUniqueCache_conf']['charactersReplacedBySpaceCharacter'] ?: ' -+_';
+		$processedTitle = strtr($processedTitle, $charactersReplacedBySpaceCharacter, str_pad('', strlen($charactersReplacedBySpaceCharacter), $space)); // convert spaces
 
 		// Convert extended letters to ascii equivalents
 		$processedTitle = $GLOBALS['TSFE']->csConvObj->specCharsToASCII($charset, $processedTitle);
