@@ -159,6 +159,11 @@ class UrlRewritingHook implements SingletonInterface {
 	 */
 	protected $rebuildCHash;
 
+	/**
+	 * @var array
+	 */
+	static protected $localRootpageIdCache = array();
+
 	/************************************
 	 *
 	 * Translate parameters to a Speaking URL (\TYPO3\CMS\Core\TypoScript\TemplateService::linkData)
@@ -2007,6 +2012,7 @@ class UrlRewritingHook implements SingletonInterface {
 				' AND field_alias=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['alias_field'], 'tx_realurl_uniqalias') .
 				' AND field_id=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['id_field'], 'tx_realurl_uniqalias') .
 				' AND tablename=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['table'], 'tx_realurl_uniqalias') .
+				' AND rootpage_id=' . intval($this->extConf['pagePath']['rootpage_id']) .
 				' AND ' . ($onlyNonExpired ? 'expire=0' : '(expire=0 OR expire>' . time() . ')'));
 		return (is_array($row) ? $row['value_id'] : false);
 	}
@@ -2023,12 +2029,15 @@ class UrlRewritingHook implements SingletonInterface {
 	 * @see lookUpTranslation(), lookUp_uniqAliasToId()
 	 */
 	protected function lookUp_idToUniqAlias($cfg, $idValue, $lang, $aliasValue = '') {
+		$rootpageId = $this->findRootPageIdForPageId($this->encodePageId);
+
 		/** @noinspection PhpUndefinedMethodInspection */
 		list($row) = $GLOBALS['TYPO3_DB']->exec_SELECTgetRows('value_alias', 'tx_realurl_uniqalias',
 				'value_id=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($idValue, 'tx_realurl_uniqalias') .
 				' AND field_alias=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['alias_field'], 'tx_realurl_uniqalias') .
 				' AND field_id=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['id_field'], 'tx_realurl_uniqalias') .
 				' AND tablename=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['table'], 'tx_realurl_uniqalias') .
+				' AND rootpage_id=' . intval($rootpageId) .
 				' AND lang=' . intval($lang) .
 				' AND expire=0' .
 				($aliasValue ? ' AND value_alias=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($aliasValue, 'tx_realurl_uniqalias') : ''),
@@ -2087,8 +2096,19 @@ class UrlRewritingHook implements SingletonInterface {
 			$uniqueAlias = $newAliasValue;
 		}
 
+		$rootpageId = $this->findRootPageIdForPageId($this->encodePageId);
+
 		// Insert the new id<->alias relation
-		$insertArray = array('tstamp' => time(), 'tablename' => $cfg['table'], 'field_alias' => $cfg['alias_field'], 'field_id' => $cfg['id_field'], 'value_alias' => $uniqueAlias, 'value_id' => $idValue, 'lang' => $lang);
+		$insertArray = array(
+			'tstamp' => time(),
+			'tablename' => $cfg['table'],
+			'field_alias' => $cfg['alias_field'],
+			'field_id' => $cfg['id_field'],
+			'value_alias' => $uniqueAlias,
+			'value_id' => $idValue,
+			'lang' => $lang,
+			'rootpage_id' => intval($rootpageId)
+		);
 
 		// Checking that this alias hasn't been stored since we looked last time
 		$returnAlias = $this->lookUp_idToUniqAlias($cfg, $idValue, $lang, $uniqueAlias);
@@ -2105,6 +2125,7 @@ class UrlRewritingHook implements SingletonInterface {
 					AND field_id=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['id_field'], 'tx_realurl_uniqalias') . '
 					AND tablename=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['table'], 'tx_realurl_uniqalias') . '
 					AND lang=' . intval($lang) . '
+					AND rootpage_id=' . intval($rootpageId) . '
 					AND expire=0', array('expire' => time() + 24 * 3600 * ($cfg['expireDays'] ? $cfg['expireDays'] : 60)));
 
 			// Store new alias
@@ -2579,6 +2600,44 @@ class UrlRewritingHook implements SingletonInterface {
 			}
 		}
 		return $rootpage_id;
+	}
+
+	/**
+	 *
+	 * @param int $pageId The page Id to build the rootline for
+	 * @return int Root page id
+	 */
+	protected function findRootPageIdForPageId($pageId) {
+		if (!isset(static::$localRootpageIdCache[$pageId])) {
+			$pageRepository = $this->getPageRepository();
+			$rootline = $pageRepository->getRootLine($pageId);
+			$rootPageId = 0;
+
+			if (!empty($rootline)) {
+				foreach ($rootline as $page) {
+					if ($page['is_siteroot']) {
+						break;
+					}
+				}
+				$rootPageId = $page['uid'];
+			}
+			static::$localRootpageIdCache[$pageId] = $rootPageId;
+		}
+
+		return static::$localRootpageIdCache[$pageId];
+	}
+
+	/**
+	 * @return \TYPO3\CMS\Frontend\Page\PageRepository
+	 */
+	protected function getPageRepository() {
+		if (is_object($GLOBALS['TSFE']->sys_page)) {
+			$pageRepository = $GLOBALS['TSFE']->sys_page;
+		} else {
+			/** @var \TYPO3\CMS\Frontend\Page\PageRepository $pageRepository */
+			$pageRepository = \TYPO3\CMS\Core\Utility\GeneralUtility::makeInstance('TYPO3\\CMS\\Frontend\\Page\\PageRepository');
+		}
+		return $pageRepository;
 	}
 
 	/**
