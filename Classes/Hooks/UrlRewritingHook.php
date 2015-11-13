@@ -1905,7 +1905,7 @@ class UrlRewritingHook implements SingletonInterface {
 		if ($aliasToUid) {
 
 			// First, test if there is an entry in cache for the alias
-			if ($cfg['useUniqueCache'] && $returnId = $this->lookUp_uniqAliasToId($cfg, $value)) {
+			if ($cfg['useUniqueCache'] && $returnId = $this->lookUp_uniqAliasToId($cfg, $value, $this->extConf['pagePath']['rootpage_id'])) {
 				return $returnId;
 			}
 			else { // If no cached entry, look it up directly in the table:
@@ -2005,14 +2005,14 @@ class UrlRewritingHook implements SingletonInterface {
 	 * @return int ID integer. If none is found: false
 	 * @see lookUpTranslation(), lookUp_idToUniqAlias()
 	 */
-	protected function lookUp_uniqAliasToId($cfg, $aliasValue, $onlyNonExpired = FALSE) {
+	protected function lookUp_uniqAliasToId($cfg, $aliasValue, $rootpageId, $onlyNonExpired = FALSE) {
 		/** @noinspection PhpUndefinedMethodInspection */
 		list($row) = $GLOBALS['TYPO3_DB']->exec_SELECTgetRows('value_id', 'tx_realurl_uniqalias',
 				'value_alias=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($aliasValue, 'tx_realurl_uniqalias') .
 				' AND field_alias=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['alias_field'], 'tx_realurl_uniqalias') .
 				' AND field_id=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['id_field'], 'tx_realurl_uniqalias') .
 				' AND tablename=' . $GLOBALS['TYPO3_DB']->fullQuoteStr($cfg['table'], 'tx_realurl_uniqalias') .
-				' AND rootpage_id=' . intval($this->extConf['pagePath']['rootpage_id']) .
+				' AND rootpage_id=' . intval($rootpageId) .
 				' AND ' . ($onlyNonExpired ? 'expire=0' : '(expire=0 OR expire>' . time() . ')'));
 		return (is_array($row) ? $row['value_id'] : false);
 	}
@@ -2072,6 +2072,8 @@ class UrlRewritingHook implements SingletonInterface {
 			return $newAliasValue;
 		}
 
+		$rootpageId = $this->findRootPageIdForPageId($this->encodePageId);
+
 		// Now, go create a unique alias
 		$uniqueAlias = '';
 		$counter = 0;
@@ -2080,7 +2082,7 @@ class UrlRewritingHook implements SingletonInterface {
 		while ($counter < $maxTry) {
 
 			// If the test-alias did NOT exist, it must be unique and we break out
-			$foundId = $this->lookUp_uniqAliasToId($cfg, $test_newAliasValue, true);
+			$foundId = $this->lookUp_uniqAliasToId($cfg, $test_newAliasValue, $rootpageId, TRUE);
 			if (!$foundId || $foundId == $idValue) {
 				$uniqueAlias = $test_newAliasValue;
 				break;
@@ -2095,8 +2097,6 @@ class UrlRewritingHook implements SingletonInterface {
 			$newAliasValue .= '-' . \TYPO3\CMS\Core\Utility\GeneralUtility::shortMD5(microtime());
 			$uniqueAlias = $newAliasValue;
 		}
-
-		$rootpageId = $this->findRootPageIdForPageId($this->encodePageId);
 
 		// Insert the new id<->alias relation
 		$insertArray = array(
