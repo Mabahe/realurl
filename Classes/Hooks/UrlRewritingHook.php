@@ -1940,7 +1940,7 @@ class UrlRewritingHook implements SingletonInterface {
 		}
 
 		/** @noinspection PhpUndefinedMethodInspection */
-		list($row) = $GLOBALS['TYPO3_DB']->exec_SELECTgetRows('chash_string',
+		list($row) = $GLOBALS['TYPO3_DB']->exec_SELECTgetRows('chash_string,spurl_string',
 			'tx_realurl_chashcache', 'spurl_hash=' .
 			$GLOBALS['TYPO3_DB']->fullQuoteStr(md5($stringForHash),
 				'tx_realurl_chashcache'));
@@ -1954,6 +1954,14 @@ class UrlRewritingHook implements SingletonInterface {
 				'tx_realurl_chashcache', 'spurl_hash=' .
 				$GLOBALS['TYPO3_DB']->fullQuoteStr(md5($stringForHash),
 					'tx_realurl_chashcache'));
+		}
+
+		if ($this->enableChashUrlDebug && is_array($row) && empty($row['spurl_string'])) {
+			$GLOBALS['TYPO3_DB']->exec_UPDATEquery('tx_realurl_chashcache',
+				'spurl_hash=' . $GLOBALS['TYPO3_DB']->fullQuoteStr(md5($stringForHash),
+					'tx_realurl_chashcache'), array(
+					'spurl_string' => $stringForHash
+				));
 		}
 
 		return is_array($row) ? $row['chash_string'] : false;
